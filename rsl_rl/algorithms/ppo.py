@@ -305,7 +305,7 @@ class PPO:
                 # L2C2 loss
                 if self.l2c2:
                     l2c2_loss = self.l2c2.compute_loss(batch.observations, batch.next_observations, batch.dones,
-                                                        self.actor.distribution, self.actor, values, self.critic,
+                                                        self.actor.distribution._distribution, self.actor, values, self.critic,
                                                         batch.masks, batch.hidden_states)
                     loss = loss + l2c2_loss
 

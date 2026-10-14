@@ -250,6 +250,7 @@ class RolloutStorage:
         # Flatten the data
         observations = self.observations.flatten(0, 1)
         next_observations = self.next_observations.flatten(0, 1)
+        dones = self.dones.flatten(0, 1)
         actions = self.actions.flatten(0, 1)
         values = self.values.flatten(0, 1)
         returns = self.returns.flatten(0, 1)
@@ -268,6 +269,7 @@ class RolloutStorage:
                 yield RolloutStorage.Batch(
                     observations=observations[batch_idx],  # type: ignore
                     next_observations=next_observations[batch_idx],  # type: ignore
+                    dones=dones[batch_idx],
                     actions=actions[batch_idx],
                     values=values[batch_idx],
                     advantages=advantages[batch_idx],
@@ -336,6 +338,7 @@ class RolloutStorage:
                 yield RolloutStorage.Batch(
                     observations=padded_obs_trajectories[:, first_traj:last_traj],  # type: ignore
                     next_observations=self.next_observations[:, start:stop],  # type: ignore
+                    dones=self.dones[:, start:stop],
                     actions=self.actions[:, start:stop],
                     values=self.values[:, start:stop],
                     advantages=self.advantages[:, start:stop],

@@ -43,7 +43,7 @@ class L2C2:
         """
         # l2c2 parameters
         self.eps = lambdas[0] / (lambdas[1] - lambdas[0])
-        self.lambda = lambdas[1] * self.eps
+        self.lambd = lambdas[1] * self.eps
         m_ = math.exp(0.5 * (math.log(lambdas[0]) + math.log(lambdas[1])))
         self.power_actor = obs_dims[0] * (1.0 - lambdas[1] * self.eps / m_)
         self.power_critic = obs_dims[1] * (1.0 - lambdas[1] * self.eps / m_)
@@ -74,19 +74,19 @@ class L2C2:
         local_observations = observations + self.scale_local_space * (next_observations - observations) * noise
         #
         actor(local_observations, masks=masks, hidden_state=hidden_states[0], stochastic_output=True)
-        local_policies = actor.distribution
+        local_policies = actor.distribution._distribution
         a_ = local_policies.rsample()
         logq = policies.log_prob(a_).sum(dim=-1)
         logp = local_policies.log_prob(a_).sum(dim=-1)
         #
-        gain_actor = self.coeff / (norm ** self.power_actor + self.eps)
+        gain_actor = self.lambd / (norm ** self.power_actor + self.eps)
         loss_actor = gain_actor * (- logq + logp + (logq - logp).exp() - 1.0)
         loss_actor = loss_actor[m_]
         loss = self._logsumexp(loss_actor)
         #
         if values is not None and critic is not None and self.gain_value_func > 0.0:
             local_values = critic(local_observations, masks=masks, hidden_state=hidden_states[1])
-            gain_critic = self.coeff / (norm ** self.power_critic + self.eps)
+            gain_critic = self.lambd / (norm ** self.power_critic + self.eps)
             loss_critic = gain_critic * (values - local_values).square().flatten()
             loss_critic = loss_critic[m_]
             loss = loss + self.gain_value_func * self._logsumexp(loss_critic)
