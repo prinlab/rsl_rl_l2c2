@@ -206,7 +206,7 @@ class PPO:
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
-        # Symmetry loss
+        # L2C2 loss
         mean_l2c2_loss = 0 if self.l2c2 else None
 
         # Get mini-batch generator
