@@ -53,6 +53,7 @@ class PPO:
         max_grad_norm: float = 1.0,
         optimizer: str = "adam",
         use_clipped_value_loss: bool = True,
+        use_rpe: bool = False,    # to PPO-RPE
         schedule: str = "adaptive",
         desired_kl: float = 0.01,
         normalize_advantage_per_mini_batch: bool = False,
@@ -120,6 +121,7 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.use_rpe = use_rpe
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
@@ -276,11 +278,19 @@ class PPO:
 
                 # Surrogate loss
                 ratio = torch.exp(actions_log_prob - torch.squeeze(batch.old_actions_log_prob))  # type: ignore
-                surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
-                surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
-                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-                )
-                surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+                if self.use_rpe:
+                    relative_denom = 1.0 / (0.5 + 0.5 * ratio.data)  # type: ignore
+                    drbeta = ratio.data * relative_denom - 1.0  # type: ignore
+                    asign = self.clip_param * torch.squeeze(batch.advantages).sign()  # type: ignore
+                    mask = asign != 0.0  # type: ignore
+                    asign[mask] = 1.0 / (asign[mask] * (1.0 - 0.5 * asign[mask]))
+                    surrogate_loss = (-torch.squeeze(batch.advantages) * ratio * (1.0 - asign * drbeta * (0.5 * drbeta + relative_denom))).mean()
+                else:
+                    surrogate = -torch.squeeze(batch.advantages) * ratio  # type: ignore
+                    surrogate_clipped = -torch.squeeze(batch.advantages) * torch.clamp(  # type: ignore
+                        ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                    )
+                    surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
                 # Value function loss
                 if self.use_clipped_value_loss:
