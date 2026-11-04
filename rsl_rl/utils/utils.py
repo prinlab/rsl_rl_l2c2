@@ -92,6 +92,9 @@ def resolve_optimizer(optimizer_name: str) -> torch.optim.Optimizer:
     optimizer_name = optimizer_name.lower()
     if optimizer_name in optimizer_dict:
         return optimizer_dict[optimizer_name]
+    elif "adaterm" in optimizer_name:
+        from adaterm import AdaTerm
+        return AdaTerm
     else:
         raise ValueError(f"Invalid optimizer '{optimizer_name}'. Valid optimizers are: {list(optimizer_dict.keys())}")
 
