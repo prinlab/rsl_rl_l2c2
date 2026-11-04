@@ -50,7 +50,7 @@ class PPO:
         value_loss_coef: float = 1.0,
         entropy_coef: float = 0.01,
         learning_rate: float = 0.001,
-        max_grad_norm: float = 1.0,
+        max_grad_norm: float | None = 1.0,
         optimizer: str = "adam",
         use_clipped_value_loss: bool = True,
         use_rpe: bool = False,    # to PPO-RPE
@@ -332,8 +332,9 @@ class PPO:
                 self.reduce_parameters()
 
             # Apply the gradients for PPO
-            nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
-            nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            if self.max_grad_norm is not None:
+                nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
             # Apply the gradients for RND
             if self.rnd:
