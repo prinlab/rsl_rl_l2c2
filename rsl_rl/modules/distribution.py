@@ -434,6 +434,122 @@ class BetaDistribution(Distribution):
         torch.nn.init.zeros_(mlp[-2].weight[self.output_dim :])  # type: ignore
         torch.nn.init.zeros_(mlp[-2].bias[self.output_dim :])  # type: ignore
 
+class PertDistribution(Distribution):
+    """PERT distribution module for bounded action spaces.
+
+    This is equivalent to Beta distribution, by converting mode and sharpness to alpha and beta.
+    """
+
+    def __init__(
+        self,
+        output_dim: int,
+        action_range: tuple[float, float] = (-1.0, 1.0),
+        mode_instead_mean: bool = True,
+    ) -> None:
+        """Initialize the PERT distribution module.
+
+        Args:
+            output_dim: Dimension of the action/output space.
+            action_range: Interval ``(min, max)`` to which PERT samples in ``[0, 1]`` are linearly rescaled.
+                Defaults to ``(-1.0, 1.0)``.
+            mode_instead_mean: mean and deterministic output are replaced by mode
+        """
+        super().__init__(output_dim)
+
+        # Compute scaling and offset for rescaling samples
+        self.action_range = action_range
+        self._range_scale = action_range[1] - action_range[0]
+        self._range_offset = action_range[0]
+        self._log_range_scale = np.log(self._range_scale)
+        self._mode_instead_mean = mode_instead_mean
+
+        self._distribution: Beta | None = None
+        self._mode: torch.Tensor | None = None
+        self._alpha: torch.Tensor | None = None
+        self._beta: torch.Tensor | None = None
+
+        # Disable args validation for speedup
+        Beta.set_default_validate_args(False)
+
+    def update(self, mlp_output: torch.Tensor) -> None:
+        """Update the PERT distribution from MLP output."""
+        mode_raw, sharp_raw = torch.unbind(mlp_output, dim=-2)
+        self._mode = torch.sigmoid(mode_raw)
+        sharp = torch.nn.functional.softplus(sharp_raw)
+        self._alpha = sharp * self._mode + 1.0
+        self._beta = sharp * (1.0 - self._mode) + 1.0
+        self._distribution = Beta(self._alpha, self._beta)
+
+    def sample(self) -> torch.Tensor:
+        """Sample from the PERT distribution and rescale to ``action_range``."""
+        return self._distribution.sample() * self._range_scale + self._range_offset  # type: ignore
+
+    def deterministic_output(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        """Extract the mean from the MLP output and rescale to ``action_range``."""
+        mode_raw, sharp_raw = torch.unbind(mlp_output, dim=-2)
+        mode = torch.sigmoid(mode_raw)
+        if self._mode_instead_mean:
+            loc = mode
+        else:
+            sharp = torch.nn.functional.softplus(sharp_raw)
+            loc = sharp * mode / (sharp + 2.0)
+        return loc * self._range_scale + self._range_offset
+
+    def as_deterministic_output_module(self) -> nn.Module:
+        """Return export-friendly module that computes the mean from the MLP output."""
+        return _PertDeterministicOutput(self._range_scale, self._range_offset, self._mode_instead_mean)
+
+    @property
+    def input_dim(self) -> list[int]:
+        """Return the input dimension required by the distribution.
+
+        The MLP must output a tensor of shape ``[..., 2, output_dim]`` where the first slice along the second-to-last
+        dimension is the raw alpha parameter and the second is the raw beta parameter.
+        """
+        return [2, self.output_dim]
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Return the mean of the PERT distribution, rescaled to ``action_range``."""
+        loc = self._mode if self._mode_instead_mean else self._alpha / (self._alpha + self._beta)
+        return loc * self._range_scale + self._range_offset  # type: ignore
+
+    @property
+    def std(self) -> torch.Tensor:
+        """Return the standard deviation of the PERT distribution, rescaled to ``action_range``."""
+        return self._distribution.stddev * self._range_scale  # type: ignore
+
+    @property
+    def entropy(self) -> torch.Tensor:
+        """Return the entropy of the PERT distribution, summed over the last dimension."""
+        return self._distribution.entropy().sum(dim=-1)  # type: ignore
+
+    @property
+    def params(self) -> tuple[torch.Tensor, ...]:
+        """Return ``(alpha, beta)`` of the current PERT distribution."""
+        return (self._alpha, self._beta)  # type: ignore
+
+    def log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
+        """Compute the log probability under the PERT distribution, summed over the last dimension.
+
+        Outputs are unscaled from ``action_range`` back to ``[0, 1]`` before computing the log probability.
+        The Jacobian correction for the linear rescaling is included.
+        """
+        unscaled = (outputs - self._range_offset) / self._range_scale
+        unscaled = unscaled.clamp(1e-6, 1.0 - 1e-6)
+        # Jacobian correction: log p(y) = log p(x) - log(scale), where y = x * scale + offset
+        return (self._distribution.log_prob(unscaled) - self._log_range_scale).sum(dim=-1)  # type: ignore
+
+    def kl_divergence(self, old_params: tuple[torch.Tensor, ...], new_params: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        """Compute KL(old || new) between two PERT distributions."""
+        old_alpha, old_beta = old_params
+        new_alpha, new_beta = new_params
+        return torch.distributions.kl_divergence(Beta(old_alpha, old_beta), Beta(new_alpha, new_beta)).sum(dim=-1)
+
+    def init_mlp_weights(self, mlp: nn.Module) -> None:
+        """Initialize the beta-parameter head weights to zero for a near-uniform initial distribution."""
+        torch.nn.init.zeros_(mlp[-2].weight[self.output_dim :])  # type: ignore
+        torch.nn.init.zeros_(mlp[-2].bias[self.output_dim :])  # type: ignore
 
 class _IdentityDeterministicOutput(nn.Module):
     """Exportable module that returns the MLP output as is."""
@@ -462,3 +578,25 @@ class _BetaDeterministicOutput(nn.Module):
         alpha = torch.nn.functional.softplus(alpha_raw) + 1.0
         beta = torch.nn.functional.softplus(beta_raw) + 1.0
         return (alpha / (alpha + beta)) * self.range_scale + self.range_offset
+
+class _PertDeterministicOutput(nn.Module):
+    """Exportable module that computes the mean of the Beta distribution from the MLP output."""
+
+    def __init__(self, range_scale: float, range_offset: float, mode_instead_mean: bool) -> None:
+        super().__init__()
+        self.range_scale = range_scale
+        self.range_offset = range_offset
+        self._fn = self._mode if mode_instead_mean else self._mean
+
+    def forward(self, mlp_output: torch.Tensor) -> torch.Tensor:
+        mode_raw, sharp_raw = torch.unbind(mlp_output, dim=-2)
+        loc = self._fn(mode_raw, sharp_raw)
+        return loc * self.range_scale + self.range_offset
+
+    def _mode(self, mode_raw: torch.Tensor, sharp_raw: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(mode_raw)
+
+    def _mean(self, mode_raw: torch.Tensor, sharp_raw: torch.Tensor) -> torch.Tensor:
+        mode = torch.sigmoid(mode_raw)
+        sharp = torch.nn.functional.softplus(sharp_raw)
+        return sharp * mode / (sharp + 2.0)
