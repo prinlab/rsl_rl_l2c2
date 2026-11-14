@@ -27,7 +27,7 @@ class L2C2:
     def __init__(
         self,
         obs_dims: tuple[int, int],
-        lambdas: tuple[float, float] = (1e-5, 1e-3),
+        lambdas: float | tuple[float, float] = (1e-5, 1e-3),
         scale_local_space: float = 1.0,
         gain_value_func: float = 0.0,
         eps: float = 1e-5,
@@ -36,12 +36,14 @@ class L2C2:
 
         Args:
             obs_dims: observation dimensions for actor and critic, which are utilized for computing power coeff.
-            lambdas: lower and upper bounds of weight for regularization.
+            lambdas: lower and upper bounds of weight for regularization. if float is given, lower bound is given as eps
             scale_local_space: scale of local space, which is defined by state transition.
             gain_value_func: weight scale for smoothing value function.
             eps: small value for numerical stabilization of normalization in logsumexp (just in case).
         """
         # l2c2 parameters
+        if isinstance(lambdas, float):
+            lambdas = (torch.finfo(torch.float32).eps, lambdas)
         self.eps = lambdas[0] / (lambdas[1] - lambdas[0])
         self.lambd = lambdas[1] * self.eps
         m_ = math.exp(0.5 * (math.log(lambdas[0]) + math.log(lambdas[1])))
